@@ -1,0 +1,10 @@
+[package]
+name = "playwright-proxy"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = "0.8.9"
+tokio = { version = "1.0", features = ["full"] }
+playwright = "0.0.20" # Community-maintained native Rust bindings
+tracing-subscriber = "0.3"
