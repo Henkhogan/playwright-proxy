@@ -38,22 +38,30 @@ service:
   targetPort: 8000
   annotations: {}
 
-# Gateway API ingress configuration
+# Standard Kubernetes Ingress configuration
 ingress:
   enabled: false
-  # Gateway reference
+  className: ""
+  annotations: {}
+  hosts:
+    - host: playwright-proxy.lan
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: playwright-proxy-tls
+  #    hosts:
+  #      - playwright-proxy.lan
+
+# Gateway API HTTPRoute configuration (alternative to standard Ingress)
+httproute:
+  enabled: false
   gatewayName: traefik
   gatewayNamespace: traefik
   sectionName: ""
   annotations: {}
-  # Hostnames for the HTTPRoute
   hostnames:
     - playwright-proxy.lan
-  # TLS configuration (if needed)
-  # tls:
-  #   - secretName: playwright-proxy-tls
-  #     hosts:
-  #       - playwright-proxy.lan
 
 resources:
   limits:
