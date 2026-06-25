@@ -18,7 +18,7 @@
 .vscode/
 
 # chart dependencies
-**/charts/*.tgz
+charts/*.tgz
 
 # Helm-specific
 *.tgz
