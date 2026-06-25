@@ -1,0 +1,121 @@
+# Default values for playwright-proxy
+# This is a YAML-formatted file.
+# Declare variables to be passed into templates.
+
+replicaCount: 1
+
+image:
+  registry: ghcr.io
+  repository: henkhogan/playwright-proxy
+  pullPolicy: IfNotPresent
+  tag: latest
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext:
+  runAsNonRoot: false
+  fsGroup: 0
+
+securityContext:
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: false
+  allowPrivilegeEscalation: true
+
+service:
+  type: ClusterIP
+  port: 8000
+  targetPort: 8000
+  annotations: {}
+
+# Gateway API ingress configuration
+ingress:
+  enabled: false
+  # Gateway reference
+  gatewayName: traefik
+  gatewayNamespace: traefik
+  sectionName: ""
+  annotations: {}
+  # Hostnames for the HTTPRoute
+  hostnames:
+    - playwright-proxy.lan
+  # TLS configuration (if needed)
+  # tls:
+  #   - secretName: playwright-proxy-tls
+  #     hosts:
+  #       - playwright-proxy.lan
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1024Mi
+  requests:
+    cpu: 500m
+    memory: 512Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 80
+
+nodeSelector:
+  topology/location: home
+
+tolerations: []
+
+affinity: {}
+
+# Environment variables (list format)
+env:
+  - name: PROXY_PORT
+    value: "8000"
+
+# Additional volumes (e.g., for custom CA bundle)
+volumes: []
+# Example for custom CA:
+#  - name: custom-ca-bundle
+#    configMap:
+#      name: custom-ca-bundle
+#      items:
+#        - key: custom-ca-bundle.crt
+#          path: custom-ca-bundle.crt
+
+# Additional volume mounts
+volumeMounts: []
+# Example for custom CA:
+#  - name: custom-ca-bundle
+#    mountPath: /etc/ssl/certs/custom-ca-bundle.crt
+#    subPath: custom-ca-bundle.crt
+
+# Liveliness and readiness probes
+livenessProbe:
+  enabled: true
+  httpGet:
+    path: /health
+    port: 8000
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  enabled: true
+  httpGet:
+    path: /health
+    port: 8000
+  initialDelaySeconds: 10
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3

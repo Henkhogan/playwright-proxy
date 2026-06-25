@@ -1,0 +1,25 @@
+# Patterns to ignore when building packages.
+# This supports shell glob patterns, relative paths, and negated patterns.
+
+# commonly ignored files/folders
+.DS_Store
+.git/
+.gitignore
+.bzr/
+.bzrignore
+.hg/
+.hgignore
+.svn/
+*.swp
+*.swo
+*~
+.idea/
+*.iml
+.vscode/
+
+# chart dependencies
+**/charts/*.tgz
+
+# Helm-specific
+*.tgz
+Chart.lock

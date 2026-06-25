@@ -1,0 +1,35 @@
+# Example: Development configuration with minimal resources
+# Usage: helm install playwright-proxy ./helm/playwright-proxy -f examples/development.yaml
+
+replicaCount: 1
+
+image:
+  registry: ghcr.io
+  repository: henkhogan/playwright-proxy
+  pullPolicy: Always
+  tag: main
+
+service:
+  type: NodePort
+  port: 8000
+  targetPort: 8000
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 250m
+    memory: 256Mi
+
+autoscaling:
+  enabled: false
+
+env:
+  PROXY_PORT: "8000"
+
+livenessProbe:
+  enabled: false
+
+readinessProbe:
+  enabled: false

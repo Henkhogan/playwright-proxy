@@ -1,134 +1,194 @@
-use axum::{
-    Router, Extension, 
-    http::{StatusCode, HeaderMap, Uri},
-    response::IntoResponse,
-};
-use playwright::Playwright;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use std::net::SocketAddr;
+use std::io;
 use std::sync::Arc;
-use std::collections::HashMap;
-use std::env;
+use rcgen::generate_simple_self_signed;
+use tokio_rustls::{TlsAcceptor, rustls::ServerConfig};
+use tokio_rustls::rustls::pki_types::CertificateDer;
+use playwright::Playwright;
 
-// Global shared state containing our launched browser instance
-struct AppState {
-    browser: playwright::api::Browser,
+// Global state for Playwright
+lazy_static::lazy_static! {
+    static ref PLAYWRIGHT: tokio::sync::Mutex<Option<Playwright>> = tokio::sync::Mutex::new(None);
 }
 
-async fn proxy_handler(
-    Extension(state): Extension<Arc<AppState>>,
-    headers: HeaderMap,
-    uri: Uri,
-) -> Result<impl IntoResponse, (StatusCode, String)> {
-    // Extract the target URL from the request
-    // In HTTP proxy mode, the request line contains the full URL
-    // e.g., GET http://www.google.com/ HTTP/1.1
-    let uri_str = uri.to_string();
+// Generate a wildcard certificate for intercepting HTTPS - returns (cert_der, key_der)
+fn generate_wildcard_cert() -> (Vec<u8>, Vec<u8>) {
+    let cert_key = generate_simple_self_signed(vec!["*.example.com".to_string()])
+        .expect("Failed to generate certificate");
     
-    // Remove any leading slash and decode the URL
-    let path_str = if uri_str.starts_with("/") {
-        &uri_str[1..]
-    } else {
-        &uri_str
-    };
+    // Get DER format directly
+    let cert_der = cert_key.cert.der().to_vec();
+    let key_der = cert_key.key_pair.serialize_der();
     
-    let target_url = if path_str.starts_with("http://") || path_str.starts_with("https://") {
-        // Already a full URL
-        path_str.to_string()
-    } else if !path_str.is_empty() {
-        // Assume it's a domain, add https:// prefix
-        format!("https://{}", path_str)
-    } else {
-        return Err((StatusCode::BAD_REQUEST, "Invalid target URL".to_string()));
-    };
+    (cert_der, key_der)
+}
 
-    // Extract playwright-prefixed headers and parse them
-    let mut _playwright_options = HashMap::new();
-    for (key, value) in headers.iter() {
-        if let Some(key_str) = key.as_str().strip_prefix("playwright-") {
-            if let Ok(value_str) = value.to_str() {
-                _playwright_options.insert(key_str.to_string(), value_str.to_string());
+// Parse HTTP request line
+fn parse_http_request(buffer: &[u8]) -> Option<(String, String, String)> {
+    let request = String::from_utf8_lossy(buffer);
+    let lines: Vec<&str> = request.lines().collect();
+    if lines.is_empty() {
+        return None;
+    }
+    
+    let parts: Vec<&str> = lines[0].split_whitespace().collect();
+    if parts.len() < 3 {
+        return None;
+    }
+    
+    Some((
+        parts[0].to_string(),      // method
+        parts[1].to_string(),      // path
+        parts[2].to_string(),      // version
+    ))
+}
+
+async fn handle_client(mut client_stream: TcpStream, cert_pem: Vec<u8>, key_pem: Vec<u8>) -> io::Result<()> {
+    // Read the first line to determine if it's a CONNECT request
+    let mut buffer = vec![0; 4096];
+    let n = client_stream.read(&mut buffer).await?;
+    
+    if let Some((method, target, _)) = parse_http_request(&buffer[..n]) {
+        if method == "CONNECT" {
+            // Parse the host and port from CONNECT request
+            let (host, _port) = if let Some(colon_pos) = target.rfind(':') {
+                (target[..colon_pos].to_string(), target[colon_pos + 1..].parse::<u16>().unwrap_or(443))
+            } else {
+                (target.clone(), 443)
+            };
+            
+            // Send 200 Connection Established response
+            let response = "HTTP/1.1 200 Connection Established\r\n\r\n";
+            client_stream.write_all(response.as_bytes()).await?;
+            
+            // Set up TLS with the generated certificate (already in DER format)
+            let cert_der = CertificateDer::from(cert_pem);
+            
+            // key_pem is already in DER format from generate_wildcard_cert
+            let key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(
+                rustls::pki_types::PrivatePkcs8KeyDer::from(key_pem)
+            );
+            
+            let config = ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(vec![cert_der], key_der)
+                .expect("Failed to create TLS config");
+            
+            let acceptor = TlsAcceptor::from(Arc::new(config));
+            
+            // Upgrade connection to TLS
+            let tls_stream = acceptor.accept(client_stream).await?;
+            
+            // Now read the actual HTTP request over TLS
+            let (mut reader, mut writer) = tokio::io::split(tls_stream);
+            let mut tls_buffer = vec![0; 4096];
+            let tls_n = reader.read(&mut tls_buffer).await?;
+            
+            if let Some((_, http_path, _)) = parse_http_request(&tls_buffer[..tls_n]) {
+                // Construct the full target URL
+                let target_url = if http_path.starts_with("http") {
+                    http_path
+                } else {
+                    format!("https://{}{}", host, http_path)
+                };
+                
+                // Fetch and render the page with Playwright
+                match render_page(&target_url).await {
+                    Ok(html) => {
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n{}",
+                            html.len(),
+                            html
+                        );
+                        let _ = writer.write_all(response.as_bytes()).await;
+                    }
+                    Err(e) => {
+                        let response = format!("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n");
+                        let _ = writer.write_all(response.as_bytes()).await;
+                        eprintln!("Rendering error: {}", e);
+                    }
+                }
             }
         }
     }
     
-    // 1. Create a new browser context with proper headers
-    let mut context_builder = state.browser.context_builder();
-    
-    // Set a realistic user-agent to avoid being blocked by sites like Instagram
-    let user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-    context_builder = context_builder.user_agent(user_agent);
-    
-    let context = context_builder
-        .build()
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to create context: {}", e)))?;
-    
-    // 2. Open a new page within that context
-    let page = context.new_page()
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to open page: {}", e)))?;
-
-    // 3. Navigate to the target URL with extended timeout for sites like Instagram
-    page.goto_builder(&target_url)
-        .timeout(60000.0) // 60 second timeout
-        .goto()
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Navigation failed: {}", e)))?;
-
-    // 4. Wait for any dynamic content to load (Instagram might load content dynamically)
-    // Add a delay to ensure all JavaScript-rendered content is visible
-    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-
-    // 5. Extract the fully executed and rendered DOM tree
-    let html_content = page.content()
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to fetch page source: {}", e)))?;
-
-    // 6. Close the context (which also closes pages) to release resources
-    let _ = context.close().await;
-
-    Ok(html_content)
+    Ok(())
 }
 
-#[tokio::main]
-async fn main() {
-    tracing_subscriber::fmt::init();
-
-    // Parse port from command-line argument or environment variable, default to 8000
-    let port = env::args()
-        .nth(1)
-        .or_else(|| env::var("PROXY_PORT").ok())
-        .and_then(|p| p.parse::<u16>().ok())
-        .unwrap_or(8000);
-
-    println!("Initializing Playwright engine...");
-    // Initialize the core Playwright driver system
-    let playwright = Playwright::initialize().await.expect("Failed to initialize Playwright");
+async fn render_page(url: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    // Initialize Playwright if needed
+    let mut pw_guard = PLAYWRIGHT.lock().await;
+    if pw_guard.is_none() {
+        let pw = Playwright::initialize().await?;
+        pw.prepare()?;
+        *pw_guard = Some(pw);
+    }
     
-    // Ensure the Chromium binaries are present
-    playwright.prepare().expect("Failed to install browser binaries");
-
-    // Launch a single background Chromium process
-    let browser = playwright
+    let pw = pw_guard.as_ref().unwrap();
+    
+    // Launch browser
+    let browser = pw
         .chromium()
         .launcher()
         .headless(true)
         .launch()
-        .await
-        .expect("Failed to launch Chromium instance");
+        .await?;
+    
+    // Create context and page
+    let context = browser.context_builder()
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        .build()
+        .await?;
+    
+    let page = context.new_page().await?;
+    
+    // Navigate to URL
+    page.goto_builder(url)
+        .timeout(60000.0)
+        .goto()
+        .await?;
+    
+    // Wait for content to load
+    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+    
+    // Get rendered HTML
+    let html = page.content().await?;
+    
+    // Close context
+    context.close().await?;
+    
+    Ok(html)
+}
 
-    let shared_state = Arc::new(AppState { browser });
-
-    // Build router to catch all requests and proxy them
-    let app = Router::new()
-        .fallback(proxy_handler)
-        .layer(Extension(shared_state));
+#[tokio::main]
+async fn main() -> io::Result<()> {
+    // Generate wildcard certificate (in DER format)
+    let (cert_der, key_der) = generate_wildcard_cert();
+    
+    // Parse port from command-line argument or environment variable, default to 9000
+    let port = std::env::args()
+        .nth(1)
+        .or_else(|| std::env::var("PROXY_PORT").ok())
+        .and_then(|p| p.parse::<u16>().ok())
+        .unwrap_or(9000);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    println!("Playwright proxy listening on {}", addr);
-    println!("Usage: http://localhost:{port}/<target_url>");
-    println!("Example: http://localhost:{port}/https://example.com");
+    let listener = TcpListener::bind(addr).await?;
     
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    println!("HTTPS Intercepting Proxy listening on {}", addr);
+    println!("Usage: curl --proxy http://localhost:{} https://example.com", port);
+    
+    loop {
+        let (client_stream, _) = listener.accept().await?;
+        let cert = cert_der.clone();
+        let key = key_der.clone();
+        
+        tokio::spawn(async move {
+            if let Err(e) = handle_client(client_stream, cert, key).await {
+                eprintln!("Error handling client: {}", e);
+            }
+        });
+    }
 }

@@ -1,0 +1,68 @@
+# Example: Staging configuration with moderate resources
+# Usage: helm install playwright-proxy ./helm/playwright-proxy -f examples/staging.yaml
+
+replicaCount: 2
+
+image:
+  registry: ghcr.io
+  repository: henkhogan/playwright-proxy
+  pullPolicy: IfNotPresent
+  tag: latest
+
+service:
+  type: ClusterIP
+  port: 8000
+  targetPort: 8000
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-staging"
+  hosts:
+    - host: playwright-proxy-staging.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: playwright-proxy-staging-tls
+      hosts:
+        - playwright-proxy-staging.example.com
+
+resources:
+  limits:
+    cpu: 1500m
+    memory: 1536Mi
+  requests:
+    cpu: 750m
+    memory: 768Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 75
+  targetMemoryUtilizationPercentage: 80
+
+env:
+  PROXY_PORT: "8000"
+
+livenessProbe:
+  enabled: true
+  httpGet:
+    path: /health
+    port: 8000
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  enabled: true
+  httpGet:
+    path: /health
+    port: 8000
+  initialDelaySeconds: 10
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3
