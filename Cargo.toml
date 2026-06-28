@@ -6,5 +6,13 @@ edition = "2021"
 [dependencies]
 axum = "0.8.9"
 tokio = { version = "1.0", features = ["full"] }
+tokio-native-tls = "0.3"
+native-tls = "0.2"
 playwright = "0.0.20" # Community-maintained native Rust bindings
 tracing-subscriber = "0.3"
+rcgen = "0.13"
+x509-parser = "0.16"
+rustls = "0.23"
+rustls-pemfile = "2.1"
+tokio-rustls = "0.25"
+lazy_static = "1.4"

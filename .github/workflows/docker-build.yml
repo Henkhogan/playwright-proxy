@@ -1,4 +1,4 @@
-name: Docker Multi-Arch Build
+name: Docker Multi-Arch Build & Helm Release
 
 on:
   push:
@@ -10,7 +10,31 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+  packages: write
+
 jobs:
+  validate-helm:
+    name: Validate Helm Chart
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: 'latest'
+
+      - name: Lint Helm chart
+        run: |
+          helm lint ./helm/playwright-proxy
+
+      - name: Template Helm chart
+        run: |
+          helm template playwright-proxy ./helm/playwright-proxy
+
   build:
     runs-on: ubuntu-latest
     steps:
@@ -19,6 +43,10 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+
+      - name: Convert repository name to lowercase
+        id: repo
+        run: echo "repo=$(echo ${{ github.repository }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
 
       - name: Login to GitHub Container Registry
         if: github.event_name != 'pull_request'
@@ -33,7 +61,7 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: |
-            ghcr.io/${{ github.repository }}
+            ghcr.io/${{ steps.repo.outputs.repo }}
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
@@ -57,5 +85,64 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache
-          cache-to: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache,mode=max
+          cache-from: type=registry,ref=ghcr.io/${{ steps.repo.outputs.repo }}:buildcache
+          cache-to: type=registry,ref=ghcr.io/${{ steps.repo.outputs.repo }}:buildcache,mode=max
+
+  package-helm:
+    name: Package & Push Helm Chart
+    runs-on: ubuntu-latest
+    needs: validate-helm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: 'latest'
+
+      - name: Convert repository name to lowercase
+        id: repo
+        run: echo "repo=$(echo ${{ github.repository }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
+      - name: Login to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Package Helm chart
+        run: |
+          mkdir -p helm-packages
+          helm package ./helm/playwright-proxy -d helm-packages
+
+      - name: Push Helm chart to OCI registry
+        if: github.event_name != 'pull_request'
+        run: |
+          for chart in helm-packages/*.tgz; do
+            helm push "$chart" oci://ghcr.io/${{ steps.repo.outputs.repo }}
+          done
+
+      - name: Generate Helm index
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          helm repo index helm-packages --url https://github.com/${{ github.repository }}/releases/download/helm-latest/
+
+      - name: Upload Helm chart packages
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: helm-packages
+          path: helm-packages/
+
+      - name: Create Helm Release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            helm-packages/playwright-proxy-*.tgz
+          token: ${{ secrets.GITHUB_TOKEN }}
+          draft: false
+          prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') || contains(github.ref, 'rc') }}

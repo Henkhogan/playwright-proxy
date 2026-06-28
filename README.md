@@ -9,11 +9,13 @@ Any specific arguments are supposed to be passed as headers prefixed with "playw
 - **Configurable port**: Use command-line arguments or environment variables
 - **Extended timeouts**: Handles slow-loading sites with 60-second navigation timeout
 - **Realistic browser**: Uses a Chrome user-agent to avoid being blocked by anti-bot systems
+- **Kubernetes-ready**: Includes Helm chart for easy Kubernetes deployment
 
 ## Prerequisites
 
 - Docker (for containerized deployment)
 - Rust 1.96+ (for local development)
+- Kubernetes 1.19+ and Helm 3.0+ (for Kubernetes deployment)
 
 ## Building
 
@@ -47,6 +49,50 @@ Docker execution:
 ```bash
 docker run -p 9000:9000 playwright-proxy 9000
 ```
+
+### Kubernetes deployment with Helm
+
+#### Quick start
+
+```bash
+# Install with default values
+helm install playwright-proxy ./helm/playwright-proxy
+
+# Upgrade existing release
+helm upgrade playwright-proxy ./helm/playwright-proxy
+
+# Uninstall
+helm uninstall playwright-proxy
+```
+
+#### Custom configuration
+
+```bash
+# Install with custom replica count and autoscaling
+helm install playwright-proxy ./helm/playwright-proxy \
+  --set replicaCount=3 \
+  --set autoscaling.enabled=true \
+  --set autoscaling.minReplicas=2 \
+  --set autoscaling.maxReplicas=10
+```
+
+```bash
+# Install with Ingress enabled
+helm install playwright-proxy ./helm/playwright-proxy \
+  --set ingress.enabled=true \
+  --set ingress.className=nginx \
+  --set ingress.hosts[0].host=proxy.example.com \
+  --set ingress.hosts[0].paths[0].path=/ \
+  --set ingress.hosts[0].paths[0].pathType=Prefix
+```
+
+```bash
+# Install with custom image tag
+helm install playwright-proxy ./helm/playwright-proxy \
+  --set image.tag=v0.2.0
+```
+
+For more Helm configuration options, see [helm/playwright-proxy/README.md](helm/playwright-proxy/README.md).
 
 ### Making requests
 
@@ -105,3 +151,18 @@ curl http://localhost:9000/https://example.com
 - **Resource usage**: Requires significant memory and CPU for browser automation
 - **Anti-bot detection**: Some sites (like Instagram) actively block automated access despite realistic user-agents
 - **JavaScript complexity**: May not handle extremely complex or obfuscated JavaScript perfectly
+
+## CI/CD Pipeline
+
+The project includes a GitHub Actions workflow that:
+
+1. **Validates** the Helm chart on every push and pull request
+2. **Builds and pushes** Docker images to GitHub Container Registry (GHCR)
+3. **Packages** the Helm chart and creates releases on version tags
+4. **Supports** multi-architecture builds (linux/amd64, linux/arm64)
+
+### Workflow triggers
+
+- **Push to main**: Builds Docker image and validates Helm chart
+- **Pull requests**: Validates Helm chart and Rust code
+- **Version tags** (`v*`): Creates GitHub releases with Helm chart packages
