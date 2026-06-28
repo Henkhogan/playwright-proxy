@@ -7,10 +7,21 @@ use rcgen::generate_simple_self_signed;
 use tokio_rustls::{TlsAcceptor, rustls::ServerConfig};
 use tokio_rustls::rustls::pki_types::CertificateDer;
 use playwright::Playwright;
+use axum::routing::get;
 
 // Global state for Playwright
 lazy_static::lazy_static! {
     static ref PLAYWRIGHT: tokio::sync::Mutex<Option<Playwright>> = tokio::sync::Mutex::new(None);
+    static ref PROXY_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+}
+
+// Health check endpoint handler
+async fn health_handler() -> &'static str {
+    if PROXY_READY.load(std::sync::atomic::Ordering::SeqCst) {
+        "OK"
+    } else {
+        "NOT_READY"
+    }
 }
 
 // Generate a wildcard certificate for intercepting HTTPS - returns (cert_der, key_der)
@@ -173,6 +184,36 @@ async fn main() -> io::Result<()> {
         .or_else(|| std::env::var("PROXY_PORT").ok())
         .and_then(|p| p.parse::<u16>().ok())
         .unwrap_or(3128);
+
+    // Health check server port (configurable via HEALTH_PORT env var, default 8080)
+    let health_port = std::env::var("HEALTH_PORT")
+        .ok()
+        .and_then(|p| p.parse::<u16>().ok())
+        .unwrap_or(8080);
+    let health_addr = SocketAddr::from(([0, 0, 0, 0], health_port));
+    
+    // Spawn health check server
+    tokio::spawn(async move {
+        let app = axum::Router::new()
+            .route("/health", axum::routing::get(health_handler));
+        
+        let listener = match tokio::net::TcpListener::bind(health_addr).await {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("Failed to bind health check server: {}", e);
+                return;
+            }
+        };
+        
+        println!("Health check endpoint listening on http://{}/health", health_addr);
+        
+        if let Err(e) = axum::serve(listener, app).await {
+            eprintln!("Health check server error: {}", e);
+        }
+    });
+    
+    // Mark proxy as ready
+    PROXY_READY.store(true, std::sync::atomic::Ordering::SeqCst);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = TcpListener::bind(addr).await?;
