@@ -34,7 +34,7 @@ docker build -t playwright-proxy .
 The proxy port can be configured using either:
 - **Command-line argument**: `./playwright-proxy 3000`
 - **Environment variable**: `PROXY_PORT=3000 ./playwright-proxy`
-- **Default**: 8000 (if no argument or environment variable is provided)
+- **Default**: 3128 (if no argument or environment variable is provided)
 
 ## Usage
 
@@ -42,12 +42,12 @@ The proxy port can be configured using either:
 
 Local execution:
 ```bash
-./playwright-proxy 9000
+./playwright-proxy 3128
 ```
 
 Docker execution:
 ```bash
-docker run -p 9000:9000 playwright-proxy 9000
+docker run -p 3128:3128 playwright-proxy 3128
 ```
 
 ### Kubernetes deployment with Helm
@@ -99,26 +99,26 @@ For more Helm configuration options, see [helm/playwright-proxy/README.md](helm/
 Use as an HTTP proxy with curl:
 ```bash
 # Render a website with JavaScript executed
-curl --proxy "http://localhost:9000" http://www.google.com
+curl --proxy "http://localhost:3128" http://www.google.com
 
 # HTTPS URLs
-curl --proxy "http://localhost:9000" https://example.com
+curl --proxy "http://localhost:3128" https://example.com
 
 # Instagram (note: may have limitations due to anti-bot measures)
-curl --proxy "http://localhost:9000" https://www.instagram.com/username
+curl --proxy "http://localhost:3128" https://www.instagram.com/username
 ```
 
 You can also use it with other tools that support HTTP proxies:
 ```bash
 # wget with proxy
-wget -e use_proxy=yes -e http_proxy=http://localhost:9000 http://www.google.com
+wget -e use_proxy=yes -e http_proxy=http://localhost:3128 http://www.google.com
 
 # Python requests
-python -c "import requests; print(requests.get('http://www.google.com', proxies={'http': 'http://localhost:9000'}).text)"
+python -c "import requests; print(requests.get('http://www.google.com', proxies={'http': 'http://localhost:3128'}).text)"
 
 # Set environment variables for system-wide proxy usage
-export http_proxy=http://localhost:9000
-export https_proxy=http://localhost:9000
+export http_proxy=http://localhost:3128
+export https_proxy=http://localhost:3128
 curl https://example.com
 ```
 
@@ -126,13 +126,13 @@ curl https://example.com
 
 The proxy returns the fully rendered HTML as plain text. Redirect to a file to save it:
 ```bash
-curl --proxy "http://localhost:9000" https://example.com > rendered.html
+curl --proxy "http://localhost:3128" https://example.com > rendered.html
 ```
 
 ### Path-based usage (legacy)
 ```bash
 # The old format still works for backwards compatibility
-curl http://localhost:9000/https://example.com
+curl http://localhost:3128/https://example.com
 ```
 
 ## How it works

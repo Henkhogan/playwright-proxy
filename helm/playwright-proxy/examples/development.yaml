@@ -11,8 +11,8 @@ image:
 
 service:
   type: NodePort
-  port: 8000
-  targetPort: 8000
+  port: 3128
+  targetPort: 3128
 
 resources:
   limits:
@@ -26,7 +26,7 @@ autoscaling:
   enabled: false
 
 env:
-  PROXY_PORT: "8000"
+  PROXY_PORT: "3128"
 
 livenessProbe:
   enabled: false

@@ -167,12 +167,12 @@ async fn main() -> io::Result<()> {
     // Generate wildcard certificate (in DER format)
     let (cert_der, key_der) = generate_wildcard_cert();
     
-    // Parse port from command-line argument or environment variable, default to 9000
+    // Parse port from command-line argument or environment variable, default to 3128
     let port = std::env::args()
         .nth(1)
         .or_else(|| std::env::var("PROXY_PORT").ok())
         .and_then(|p| p.parse::<u16>().ok())
-        .unwrap_or(9000);
+        .unwrap_or(3128);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = TcpListener::bind(addr).await?;

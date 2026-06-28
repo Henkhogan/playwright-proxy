@@ -11,8 +11,8 @@ image:
 
 service:
   type: ClusterIP
-  port: 8000
-  targetPort: 8000
+  port: 3128
+  targetPort: 3128
 
 ingress:
   enabled: true
@@ -45,13 +45,13 @@ autoscaling:
   targetMemoryUtilizationPercentage: 80
 
 env:
-  PROXY_PORT: "8000"
+  PROXY_PORT: "3128"
 
 livenessProbe:
   enabled: true
   httpGet:
     path: /health
-    port: 8000
+    port: 3128
   initialDelaySeconds: 30
   periodSeconds: 10
   timeoutSeconds: 5
@@ -61,7 +61,7 @@ readinessProbe:
   enabled: true
   httpGet:
     path: /health
-    port: 8000
+    port: 3128
   initialDelaySeconds: 10
   periodSeconds: 5
   timeoutSeconds: 3

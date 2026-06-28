@@ -34,8 +34,8 @@ securityContext:
 
 service:
   type: ClusterIP
-  port: 8000
-  targetPort: 8000
+  port: 3128
+  targetPort: 3128
   annotations: {}
 
 # Standard Kubernetes Ingress configuration
@@ -88,7 +88,7 @@ affinity: {}
 # Environment variables (list format)
 env:
   - name: PROXY_PORT
-    value: "8000"
+    value: "3128"
 
 # Additional volumes (e.g., for custom CA bundle)
 volumes: []
@@ -112,7 +112,7 @@ livenessProbe:
   enabled: true
   httpGet:
     path: /health
-    port: 8000
+    port: 3128
   initialDelaySeconds: 30
   periodSeconds: 10
   timeoutSeconds: 5
@@ -122,7 +122,7 @@ readinessProbe:
   enabled: true
   httpGet:
     path: /health
-    port: 8000
+    port: 3128
   initialDelaySeconds: 10
   periodSeconds: 5
   timeoutSeconds: 3
