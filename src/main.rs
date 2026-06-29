@@ -7,21 +7,11 @@ use rcgen::generate_simple_self_signed;
 use tokio_rustls::{TlsAcceptor, rustls::ServerConfig};
 use tokio_rustls::rustls::pki_types::CertificateDer;
 use playwright::Playwright;
-use axum::routing::get;
 
 // Global state for Playwright
 lazy_static::lazy_static! {
     static ref PLAYWRIGHT: tokio::sync::Mutex<Option<Playwright>> = tokio::sync::Mutex::new(None);
     static ref PROXY_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-}
-
-// Health check endpoint handler
-async fn health_handler() -> &'static str {
-    if PROXY_READY.load(std::sync::atomic::Ordering::SeqCst) {
-        "OK"
-    } else {
-        "NOT_READY"
-    }
 }
 
 // Generate a wildcard certificate for intercepting HTTPS - returns (cert_der, key_der)
@@ -57,11 +47,35 @@ fn parse_http_request(buffer: &[u8]) -> Option<(String, String, String)> {
 }
 
 async fn handle_client(mut client_stream: TcpStream, cert_pem: Vec<u8>, key_pem: Vec<u8>) -> io::Result<()> {
-    // Read the first line to determine if it's a CONNECT request
+    // Read the first line to determine if it's a health check or proxy request
     let mut buffer = vec![0; 4096];
     let n = client_stream.read(&mut buffer).await?;
     
     if let Some((method, target, _)) = parse_http_request(&buffer[..n]) {
+        // Handle health check requests
+        if (method == "GET" || method == "HEAD") && target == "/health" {
+            let status = if PROXY_READY.load(std::sync::atomic::Ordering::SeqCst) {
+                "200 OK"
+            } else {
+                "503 Service Unavailable"
+            };
+            
+            let html = if status.starts_with("200") {
+                "<html><body><h1>OK</h1></body></html>".to_string()
+            } else {
+                "<html><body><h1>NOT_READY</h1></body></html>".to_string()
+            };
+            
+            let response = format!(
+                "HTTP/1.1 {}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\n\r\n{}",
+                status,
+                html.len(),
+                html
+            );
+            client_stream.write_all(response.as_bytes()).await?;
+            return Ok(());
+        }
+        
         if method == "CONNECT" {
             // Parse the host and port from CONNECT request
             let (host, _port) = if let Some(colon_pos) = target.rfind(':') {
@@ -121,6 +135,37 @@ async fn handle_client(mut client_stream: TcpStream, cert_pem: Vec<u8>, key_pem:
                         eprintln!("Rendering error: {}", e);
                     }
                 }
+            }
+        } else if method == "GET" || method == "POST" || method == "HEAD" {
+            // Handle direct HTTP requests with target URL as path
+            // e.g., GET /https://www.example.com/path HTTP/1.1
+            let target_url = if target.starts_with('/') {
+                target[1..].to_string()  // Remove leading /
+            } else {
+                target
+            };
+            
+            // Only process if it looks like a URL
+            if target_url.starts_with("http://") || target_url.starts_with("https://") {
+                match render_page(&target_url).await {
+                    Ok(html) => {
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n{}",
+                            html.len(),
+                            html
+                        );
+                        let _ = client_stream.write_all(response.as_bytes()).await;
+                    }
+                    Err(e) => {
+                        let response = format!("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n");
+                        let _ = client_stream.write_all(response.as_bytes()).await;
+                        eprintln!("Rendering error: {}", e);
+                    }
+                }
+            } else {
+                // Invalid request
+                let response = "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\nContent-Length: 46\r\n\r\n<html><body>Invalid URL format</body></html>";
+                let _ = client_stream.write_all(response.as_bytes()).await;
             }
         }
     }
@@ -185,41 +230,16 @@ async fn main() -> io::Result<()> {
         .and_then(|p| p.parse::<u16>().ok())
         .unwrap_or(3128);
 
-    // Health check server port (configurable via HEALTH_PORT env var, default 8080)
-    let health_port = std::env::var("HEALTH_PORT")
-        .ok()
-        .and_then(|p| p.parse::<u16>().ok())
-        .unwrap_or(8080);
-    let health_addr = SocketAddr::from(([0, 0, 0, 0], health_port));
-    
-    // Spawn health check server
-    tokio::spawn(async move {
-        let app = axum::Router::new()
-            .route("/health", axum::routing::get(health_handler));
-        
-        let listener = match tokio::net::TcpListener::bind(health_addr).await {
-            Ok(l) => l,
-            Err(e) => {
-                eprintln!("Failed to bind health check server: {}", e);
-                return;
-            }
-        };
-        
-        println!("Health check endpoint listening on http://{}/health", health_addr);
-        
-        if let Err(e) = axum::serve(listener, app).await {
-            eprintln!("Health check server error: {}", e);
-        }
-    });
-    
-    // Mark proxy as ready
-    PROXY_READY.store(true, std::sync::atomic::Ordering::SeqCst);
-
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = TcpListener::bind(addr).await?;
     
-    println!("HTTPS Intercepting Proxy listening on {}", addr);
-    println!("Usage: curl --proxy http://localhost:{} https://example.com", port);
+    println!("Proxy and health check listening on {}", addr);
+    println!("  Health check: http://localhost:{}/health", port);
+    println!("  Direct proxy: http://localhost:{}/https://example.com", port);
+    println!("  CONNECT proxy: curl --proxy http://localhost:{} https://example.com", port);
+    
+    // Mark proxy as ready
+    PROXY_READY.store(true, std::sync::atomic::Ordering::SeqCst);
     
     loop {
         let (client_stream, _) = listener.accept().await?;

@@ -89,8 +89,6 @@ affinity: {}
 env:
   - name: PROXY_PORT
     value: "3128"
-  - name: HEALTH_PORT
-    value: "8080"
 
 # Additional volumes (e.g., for custom CA bundle)
 volumes: []

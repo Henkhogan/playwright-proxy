@@ -58,16 +58,3 @@ Create the name of the service account to use
 {{- default "default" .Values.serviceAccount.name }}
 {{- end }}
 {{- end }}
-
-{{/*
-Extract HEALTH_PORT from environment variables
-*/}}
-{{- define "playwright-proxy.healthPort" -}}
-{{- $healthPort := "8080" }}
-{{- range .Values.env }}
-  {{- if eq .name "HEALTH_PORT" }}
-    {{- $healthPort = .value }}
-  {{- end }}
-{{- end }}
-{{- $healthPort }}
-{{- end }}
