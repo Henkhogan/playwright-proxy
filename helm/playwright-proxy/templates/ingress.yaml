@@ -5,10 +5,16 @@ metadata:
   name: {{ include "playwright-proxy.fullname" . }}
   labels:
     {{- include "playwright-proxy.labels" . | nindent 4 }}
-  {{- with .Values.ingress.annotations }}
   annotations:
+    {{- if .Values.ingress.websocket.enabled }}
+    # WebSocket support annotations
+    {{- with .Values.ingress.websocket.annotations }}
     {{- toYaml . | nindent 4 }}
-  {{- end }}
+    {{- end }}
+    {{- end }}
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
 spec:
   {{- if .Values.ingress.className }}
   ingressClassName: {{ .Values.ingress.className }}

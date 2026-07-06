@@ -3,6 +3,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use std::net::SocketAddr;
 use std::io;
 use std::sync::Arc;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use rcgen::generate_simple_self_signed;
 use tokio_rustls::{TlsAcceptor, rustls::ServerConfig};
 use tokio_rustls::rustls::pki_types::CertificateDer;
@@ -40,6 +42,61 @@ impl<'a> MakeWriter<'a> for BroadcastWriter {
         BroadcastWriter {
             tx: self.tx.clone(),
         }
+    }
+}
+
+// Wrapper for a TcpStream that first reads from a buffer, then from the stream
+struct BufferedStream {
+    stream: TcpStream,
+    buffer: Vec<u8>,
+    position: usize,
+}
+
+impl BufferedStream {
+    fn new(stream: TcpStream, buffer: Vec<u8>) -> Self {
+        Self {
+            stream,
+            buffer,
+            position: 0,
+        }
+    }
+}
+
+impl tokio::io::AsyncRead for BufferedStream {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        // First, read from our buffer
+        if self.position < self.buffer.len() {
+            let remaining = &self.buffer[self.position..];
+            let to_copy = std::cmp::min(remaining.len(), buf.remaining());
+            buf.put_slice(&remaining[..to_copy]);
+            self.position += to_copy;
+            return Poll::Ready(Ok(()));
+        }
+        
+        // Buffer exhausted, read from underlying stream
+        Pin::new(&mut self.stream).poll_read(cx, buf)
+    }
+}
+
+impl tokio::io::AsyncWrite for BufferedStream {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.stream).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.stream).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.stream).poll_shutdown(cx)
     }
 }
 
@@ -85,12 +142,9 @@ fn parse_http_request(buffer: &[u8]) -> Option<(String, String, String)> {
     ))
 }
 
-async fn handle_client(mut client_stream: TcpStream, cert_pem: Vec<u8>, key_pem: Vec<u8>) -> io::Result<()> {
-    // Read the first line to determine if it's a health check or proxy request
-    let mut buffer = vec![0; 4096];
-    let n = client_stream.read(&mut buffer).await?;
+async fn handle_client_with_buffer(mut client_stream: TcpStream, initial_buffer: &[u8], cert_pem: Vec<u8>, key_pem: Vec<u8>) -> io::Result<()> {
     
-    if let Some((method, target, _)) = parse_http_request(&buffer[..n]) {
+    if let Some((method, target, _)) = parse_http_request(initial_buffer) {
         // Handle health check requests (without logging)
         if (method == "GET" || method == "HEAD") && target == "/health" {
             let status = if PROXY_READY.load(std::sync::atomic::Ordering::SeqCst) {
@@ -277,9 +331,13 @@ async fn render_page(url: &str) -> Result<String, Box<dyn std::error::Error + Se
     Ok(html)
 }
 
-// WebSocket handler for log streaming
-async fn websocket_handler(stream: TcpStream) -> Result<(), Box<dyn std::error::Error>> {
-    let ws_stream = tokio_tungstenite::accept_async(stream)
+// WebSocket handler with pre-read buffer
+async fn websocket_handler_with_buffer(stream: TcpStream, initial_buffer: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+    // Create a buffered stream that prepends the already-read data
+    let buffered_stream = BufferedStream::new(stream, initial_buffer.to_vec());
+    
+    // Now accept_async can read the full handshake
+    let ws_stream = tokio_tungstenite::accept_async(buffered_stream)
         .await
         .map_err(|e| format!("WebSocket error: {}", e))?;
     
@@ -347,32 +405,35 @@ async fn main() -> io::Result<()> {
     info!("Proxy is ready to accept connections");
     
     loop {
-        let (client_stream, _) = listener.accept().await?;
+        let (mut client_stream, _) = listener.accept().await?;
         let cert = cert_der.clone();
         let key = key_der.clone();
         
         tokio::spawn(async move {
-            // Try to detect WebSocket upgrade request
+            // Read the first bytes to detect WebSocket upgrade request
             let mut buffer = vec![0; 4096];
-            let n = match client_stream.peek(&mut buffer).await {
+            let n = match client_stream.read(&mut buffer).await {
                 Ok(n) => n,
                 Err(_) => 0,
             };
             
-            let is_websocket = n > 0 && {
+            if n > 0 {
                 let request_str = String::from_utf8_lossy(&buffer[..n.min(1024)]);
-                request_str.contains("GET /logs") && request_str.contains("Upgrade: websocket")
-            };
-            
-            if is_websocket {
-                // Handle WebSocket connection
-                if let Err(e) = websocket_handler(client_stream).await {
-                    error!("WebSocket error: {}", e);
-                }
-            } else {
-                // Handle proxy request
-                if let Err(e) = handle_client(client_stream, cert, key).await {
-                    error!("Error handling client: {}", e);
+                let is_websocket = request_str.contains("GET /logs") && 
+                                   (request_str.contains("Upgrade: websocket") || 
+                                    request_str.contains("upgrade: websocket"));
+                
+                if is_websocket {
+                    // Handle WebSocket connection
+                    // We need to reconstruct the stream with the buffer we already read
+                    if let Err(e) = websocket_handler_with_buffer(client_stream, &buffer[..n]).await {
+                        error!("WebSocket error: {}", e);
+                    }
+                } else {
+                    // Handle proxy request with the buffer we already read
+                    if let Err(e) = handle_client_with_buffer(client_stream, &buffer[..n], cert, key).await {
+                        error!("Error handling client: {}", e);
+                    }
                 }
             }
         });

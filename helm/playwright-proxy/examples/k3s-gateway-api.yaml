@@ -1,0 +1,78 @@
+# Example: k3s configuration with Gateway API HTTPRoute and WebSocket support
+# Usage: helm install playwright-proxy ./helm/playwright-proxy -f examples/k3s-gateway-api.yaml
+
+replicaCount: 1
+
+image:
+  registry: ghcr.io
+  repository: henkhogan/playwright-proxy
+  pullPolicy: IfNotPresent
+  tag: latest
+
+service:
+  type: ClusterIP
+  port: 3128
+  targetPort: 3128
+
+# Disable standard Ingress
+ingress:
+  enabled: false
+
+# Enable Gateway API HTTPRoute (recommended for modern k3s)
+httproute:
+  enabled: true
+  gatewayName: traefik
+  gatewayNamespace: traefik
+  # Optional: specify a specific listener/section
+  # sectionName: websecure
+  annotations:
+    # Optional Traefik-specific annotations
+    # traefik.io/router.middlewares: default-compress@kubernetescrd
+  hostnames:
+    - playwright-proxy.local
+  
+  # WebSocket support (enabled by default)
+  websocket:
+    enabled: true
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1024Mi
+  requests:
+    cpu: 500m
+    memory: 512Mi
+
+autoscaling:
+  enabled: false
+
+env:
+  - name: PROXY_PORT
+    value: "3128"
+
+livenessProbe:
+  enabled: true
+  httpGet:
+    path: /health
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  enabled: true
+  httpGet:
+    path: /health
+  initialDelaySeconds: 10
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+# Example node selector for k3s
+nodeSelector: {}
+# If you want to run on specific nodes:
+#  kubernetes.io/hostname: your-k3s-node
+
+tolerations: []
+
+affinity: {}

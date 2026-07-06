@@ -1,0 +1,86 @@
+# Example: k3s configuration with Traefik Ingress and WebSocket support
+# Usage: helm install playwright-proxy ./helm/playwright-proxy -f examples/k3s-traefik.yaml
+
+replicaCount: 1
+
+image:
+  registry: ghcr.io
+  repository: henkhogan/playwright-proxy
+  pullPolicy: IfNotPresent
+  tag: latest
+
+service:
+  type: ClusterIP
+  port: 3128
+  targetPort: 3128
+
+# Enable Ingress for k3s with Traefik (default in k3s)
+ingress:
+  enabled: true
+  className: traefik
+  annotations:
+    # Traefik-specific annotations for better WebSocket support
+    traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
+    # Enable automatic HTTPS redirect (optional)
+    # traefik.ingress.kubernetes.io/redirect-entry-point: websecure
+    # traefik.ingress.kubernetes.io/redirect-permanent: "true"
+  hosts:
+    - host: playwright-proxy.local
+      paths:
+        - path: /
+          pathType: Prefix
+  # WebSocket support is enabled by default in values.yaml
+  websocket:
+    enabled: true
+    annotations:
+      # Traefik handles WebSocket upgrades automatically
+      # No special annotations needed for basic WebSocket support
+      traefik.ingress.kubernetes.io/router.middlewares: ""
+
+# Optional TLS configuration (uncomment if you have cert-manager)
+#  tls:
+#    - secretName: playwright-proxy-tls
+#      hosts:
+#        - playwright-proxy.local
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1024Mi
+  requests:
+    cpu: 500m
+    memory: 512Mi
+
+autoscaling:
+  enabled: false
+
+env:
+  - name: PROXY_PORT
+    value: "3128"
+
+livenessProbe:
+  enabled: true
+  httpGet:
+    path: /health
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  enabled: true
+  httpGet:
+    path: /health
+  initialDelaySeconds: 10
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+# Example node selector for k3s
+nodeSelector: {}
+# If you want to run on specific nodes:
+#  kubernetes.io/hostname: your-k3s-node
+
+tolerations: []
+
+affinity: {}

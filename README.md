@@ -6,10 +6,11 @@ Any specific arguments are supposed to be passed as headers prefixed with "playw
 
 - **Full JavaScript rendering**: Executes all JavaScript on the page before returning HTML
 - **HTTP/HTTPS proxy**: Works as a standard HTTP proxy compatible with `curl`, `wget`, and other tools
+- **WebSocket log streaming**: Real-time log streaming via WebSocket at `/logs` endpoint
 - **Configurable port**: Use command-line arguments or environment variables
 - **Extended timeouts**: Handles slow-loading sites with 60-second navigation timeout
 - **Realistic browser**: Uses a Chrome user-agent to avoid being blocked by anti-bot systems
-- **Kubernetes-ready**: Includes Helm chart for easy Kubernetes deployment
+- **Kubernetes-ready**: Includes Helm chart for easy Kubernetes deployment with k3s support
 
 ## Prerequisites
 
@@ -94,6 +95,29 @@ helm install playwright-proxy ./helm/playwright-proxy \
 
 For more Helm configuration options, see [helm/playwright-proxy/README.md](helm/playwright-proxy/README.md).
 
+#### k3s deployment with WebSocket support
+
+If you're running on k3s and need WebSocket support for log streaming:
+
+**Option 1: Gateway API (Recommended for modern k3s)**
+```bash
+# Use the Gateway API HTTPRoute configuration
+helm install playwright-proxy ./helm/playwright-proxy \
+  -f helm/playwright-proxy/examples/k3s-gateway-api.yaml
+```
+
+**Option 2: Standard Ingress**
+```bash
+# Use the k3s-specific Ingress configuration
+helm install playwright-proxy ./helm/playwright-proxy \
+  -f helm/playwright-proxy/examples/k3s-traefik.yaml
+```
+
+For detailed WebSocket configuration and troubleshooting:
+- **Gateway API guide**: [GATEWAY_API.md](GATEWAY_API.md)
+- **WebSocket guide**: [WEBSOCKET_K3S.md](WEBSOCKET_K3S.md)
+- **Quick start**: [QUICKSTART_K3S_WEBSOCKET.md](QUICKSTART_K3S_WEBSOCKET.md)
+
 ### Making requests
 
 Use as an HTTP proxy with curl:
@@ -134,6 +158,21 @@ curl --proxy "http://localhost:3128" https://example.com > rendered.html
 # The old format still works for backwards compatibility
 curl http://localhost:3128/https://example.com
 ```
+
+### WebSocket log streaming
+
+Connect to the WebSocket endpoint to receive real-time logs:
+
+```bash
+# Using websocat
+websocat ws://localhost:3128/logs
+
+# Or from JavaScript/browser
+const ws = new WebSocket('ws://localhost:3128/logs');
+ws.onmessage = (event) => console.log(event.data);
+```
+
+For k3s deployment, see [WEBSOCKET_K3S.md](WEBSOCKET_K3S.md) for detailed configuration.
 
 ## How it works
 

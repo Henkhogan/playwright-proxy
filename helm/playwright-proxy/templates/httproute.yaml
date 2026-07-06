@@ -5,10 +5,14 @@ metadata:
   name: {{ include "playwright-proxy.fullname" . }}
   labels:
     {{- include "playwright-proxy.labels" . | nindent 4 }}
-  {{- with .Values.httproute.annotations }}
   annotations:
+    {{- if .Values.httproute.websocket.enabled }}
+    # WebSocket support - Gateway API handles HTTP/1.1 Upgrade automatically
+    gateway.networking.k8s.io/websocket: "enabled"
+    {{- end }}
+    {{- with .Values.httproute.annotations }}
     {{- toYaml . | nindent 4 }}
-  {{- end }}
+    {{- end }}
 spec:
   parentRefs:
     - name: {{ .Values.httproute.gatewayName }}
@@ -25,6 +29,10 @@ spec:
         - path:
             type: PathPrefix
             value: /
+      {{- if .Values.httproute.websocket.enabled }}
+      # Enable WebSocket support for all paths
+      # Gateway API HTTPRoute automatically supports HTTP/1.1 Upgrade
+      {{- end }}
       backendRefs:
         - name: {{ include "playwright-proxy.fullname" . }}
           port: {{ .Values.service.port }}

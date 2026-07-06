@@ -43,6 +43,12 @@ ingress:
   enabled: false
   className: ""
   annotations: {}
+    # Example annotations for Traefik (k3s default):
+    # traefik.ingress.kubernetes.io/router.middlewares: default-compress@kubernetescrd
+    # For nginx ingress controller, use:
+    # nginx.ingress.kubernetes.io/websocket-services: playwright-proxy
+    # nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    # nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
   hosts:
     - host: playwright-proxy.lan
       paths:
@@ -52,6 +58,18 @@ ingress:
   #  - secretName: playwright-proxy-tls
   #    hosts:
   #      - playwright-proxy.lan
+  
+  # WebSocket-specific configuration
+  websocket:
+    enabled: true
+    # Additional annotations for WebSocket support
+    annotations:
+      # Traefik (k3s default)
+      traefik.ingress.kubernetes.io/router.middlewares: ""
+      # Nginx (set the service name to match your release name)
+      nginx.ingress.kubernetes.io/websocket-services: "playwright-proxy"
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+      nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
 
 # Gateway API HTTPRoute configuration (alternative to standard Ingress)
 httproute:
@@ -60,8 +78,17 @@ httproute:
   gatewayNamespace: traefik
   sectionName: ""
   annotations: {}
+    # Example annotations for Gateway API with Traefik:
+    # traefik.io/router.middlewares: default-compress@kubernetescrd
   hostnames:
     - playwright-proxy.lan
+  
+  # WebSocket-specific configuration for Gateway API
+  websocket:
+    enabled: true
+    # WebSocket support is built into Gateway API HTTPRoute
+    # No special configuration needed - HTTP/1.1 Upgrade is handled automatically
+    # Optional: Add timeout configurations via gateway policies if needed
 
 resources:
   limits:
