@@ -91,17 +91,13 @@ async fn handle_client(mut client_stream: TcpStream, cert_pem: Vec<u8>, key_pem:
     let n = client_stream.read(&mut buffer).await?;
     
     if let Some((method, target, _)) = parse_http_request(&buffer[..n]) {
-        info!("Received request: {} {}", method, target);
-        
-        // Handle health check requests
+        // Handle health check requests (without logging)
         if (method == "GET" || method == "HEAD") && target == "/health" {
             let status = if PROXY_READY.load(std::sync::atomic::Ordering::SeqCst) {
                 "200 OK"
             } else {
                 "503 Service Unavailable"
             };
-            
-            info!("Health check: {}", status);
             
             let html = if status.starts_with("200") {
                 "<html><body><h1>OK</h1></body></html>".to_string()
@@ -118,6 +114,8 @@ async fn handle_client(mut client_stream: TcpStream, cert_pem: Vec<u8>, key_pem:
             client_stream.write_all(response.as_bytes()).await?;
             return Ok(());
         }
+        
+        info!("Received request: {} {}", method, target);
         
         if method == "CONNECT" {
             // Parse the host and port from CONNECT request
