@@ -7,11 +7,50 @@ use rcgen::generate_simple_self_signed;
 use tokio_rustls::{TlsAcceptor, rustls::ServerConfig};
 use tokio_rustls::rustls::pki_types::CertificateDer;
 use playwright::Playwright;
+use tokio::sync::broadcast;
+use futures::{StreamExt, SinkExt};
+use tracing::{info, warn, error};
+use tracing_subscriber::fmt::MakeWriter;
+use std::io::Write;
+
+// Custom writer that broadcasts to WebSocket and writes to stderr
+struct BroadcastWriter {
+    tx: broadcast::Sender<String>,
+}
+
+impl Write for BroadcastWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if let Ok(s) = std::str::from_utf8(buf) {
+            let _ = self.tx.send(s.to_string());
+            io::stderr().write(buf)
+        } else {
+            Ok(buf.len())
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        io::stderr().flush()
+    }
+}
+
+impl<'a> MakeWriter<'a> for BroadcastWriter {
+    type Writer = Self;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        BroadcastWriter {
+            tx: self.tx.clone(),
+        }
+    }
+}
 
 // Global state for Playwright
 lazy_static::lazy_static! {
     static ref PLAYWRIGHT: tokio::sync::Mutex<Option<Playwright>> = tokio::sync::Mutex::new(None);
     static ref PROXY_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    static ref LOG_TX: broadcast::Sender<String> = {
+        let (tx, _) = broadcast::channel(100);
+        tx
+    };
 }
 
 // Generate a wildcard certificate for intercepting HTTPS - returns (cert_der, key_der)
@@ -52,6 +91,8 @@ async fn handle_client(mut client_stream: TcpStream, cert_pem: Vec<u8>, key_pem:
     let n = client_stream.read(&mut buffer).await?;
     
     if let Some((method, target, _)) = parse_http_request(&buffer[..n]) {
+        info!("Received request: {} {}", method, target);
+        
         // Handle health check requests
         if (method == "GET" || method == "HEAD") && target == "/health" {
             let status = if PROXY_READY.load(std::sync::atomic::Ordering::SeqCst) {
@@ -59,6 +100,8 @@ async fn handle_client(mut client_stream: TcpStream, cert_pem: Vec<u8>, key_pem:
             } else {
                 "503 Service Unavailable"
             };
+            
+            info!("Health check: {}", status);
             
             let html = if status.starts_with("200") {
                 "<html><body><h1>OK</h1></body></html>".to_string()
@@ -83,6 +126,8 @@ async fn handle_client(mut client_stream: TcpStream, cert_pem: Vec<u8>, key_pem:
             } else {
                 (target.clone(), 443)
             };
+            
+            info!("CONNECT request to: {}", host);
             
             // Send 200 Connection Established response
             let response = "HTTP/1.1 200 Connection Established\r\n\r\n";
@@ -119,9 +164,12 @@ async fn handle_client(mut client_stream: TcpStream, cert_pem: Vec<u8>, key_pem:
                     format!("https://{}{}", host, http_path)
                 };
                 
+                info!("Rendering page: {}", target_url);
+                
                 // Fetch and render the page with Playwright
                 match render_page(&target_url).await {
                     Ok(html) => {
+                        info!("Successfully rendered: {} ({} bytes)", target_url, html.len());
                         let response = format!(
                             "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n{}",
                             html.len(),
@@ -132,7 +180,7 @@ async fn handle_client(mut client_stream: TcpStream, cert_pem: Vec<u8>, key_pem:
                     Err(e) => {
                         let response = format!("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n");
                         let _ = writer.write_all(response.as_bytes()).await;
-                        eprintln!("Rendering error: {}", e);
+                        error!("Rendering error for {}: {}", target_url, e);
                     }
                 }
             }
@@ -147,8 +195,11 @@ async fn handle_client(mut client_stream: TcpStream, cert_pem: Vec<u8>, key_pem:
             
             // Only process if it looks like a URL
             if target_url.starts_with("http://") || target_url.starts_with("https://") {
+                info!("Direct proxy request: {}", target_url);
+                
                 match render_page(&target_url).await {
                     Ok(html) => {
+                        info!("Successfully rendered: {} ({} bytes)", target_url, html.len());
                         let response = format!(
                             "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n{}",
                             html.len(),
@@ -159,10 +210,11 @@ async fn handle_client(mut client_stream: TcpStream, cert_pem: Vec<u8>, key_pem:
                     Err(e) => {
                         let response = format!("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n");
                         let _ = client_stream.write_all(response.as_bytes()).await;
-                        eprintln!("Rendering error: {}", e);
+                        error!("Rendering error for {}: {}", target_url, e);
                     }
                 }
             } else {
+                warn!("Invalid URL format: {}", target_url);
                 // Invalid request
                 let response = "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\nContent-Length: 46\r\n\r\n<html><body>Invalid URL format</body></html>";
                 let _ = client_stream.write_all(response.as_bytes()).await;
@@ -174,17 +226,22 @@ async fn handle_client(mut client_stream: TcpStream, cert_pem: Vec<u8>, key_pem:
 }
 
 async fn render_page(url: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    info!("Starting browser for: {}", url);
+    
     // Initialize Playwright if needed
     let mut pw_guard = PLAYWRIGHT.lock().await;
     if pw_guard.is_none() {
+        info!("Initializing Playwright...");
         let pw = Playwright::initialize().await?;
         pw.prepare()?;
         *pw_guard = Some(pw);
+        info!("Playwright initialized successfully");
     }
     
     let pw = pw_guard.as_ref().unwrap();
     
     // Launch browser
+    info!("Launching Chromium browser...");
     let browser = pw
         .chromium()
         .launcher()
@@ -199,6 +256,7 @@ async fn render_page(url: &str) -> Result<String, Box<dyn std::error::Error + Se
         .await?;
     
     let page = context.new_page().await?;
+    info!("Navigating to: {}", url);
     
     // Navigate to URL
     page.goto_builder(url)
@@ -206,22 +264,68 @@ async fn render_page(url: &str) -> Result<String, Box<dyn std::error::Error + Se
         .goto()
         .await?;
     
+    info!("Waiting for content to load...");
     // Wait for content to load
     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
     
+    info!("Extracting HTML content...");
     // Get rendered HTML
     let html = page.content().await?;
     
     // Close context
     context.close().await?;
+    info!("Page rendering complete: {} characters", html.len());
     
     Ok(html)
 }
 
+// WebSocket handler for log streaming
+async fn websocket_handler(stream: TcpStream) -> Result<(), Box<dyn std::error::Error>> {
+    let ws_stream = tokio_tungstenite::accept_async(stream)
+        .await
+        .map_err(|e| format!("WebSocket error: {}", e))?;
+    
+    info!("WebSocket client connected");
+    
+    let mut rx = LOG_TX.subscribe();
+    let (mut ws_sender, _ws_receiver) = ws_stream.split();
+    
+    loop {
+        match rx.recv().await {
+            Ok(msg) => {
+                let ws_msg = tokio_tungstenite::tungstenite::Message::Text(msg);
+                if let Err(e) = ws_sender.send(ws_msg).await {
+                    error!("Failed to send WebSocket message: {}", e);
+                    break;
+                }
+            }
+            Err(_) => {
+                // Sender has been dropped
+                break;
+            }
+        }
+    }
+    
+    info!("WebSocket client disconnected");
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> io::Result<()> {
+    // Initialize tracing subscriber with BroadcastWriter
+    tracing_subscriber::fmt()
+        .with_target(false)
+        .with_thread_ids(false)
+        .with_level(true)
+        .with_writer(BroadcastWriter { tx: LOG_TX.clone() })
+        .init();
+    
+    info!("Starting Playwright Proxy...");
+    
     // Generate wildcard certificate (in DER format)
+    info!("Generating wildcard certificate...");
     let (cert_der, key_der) = generate_wildcard_cert();
+    info!("Certificate generated successfully");
     
     // Parse port from command-line argument or environment variable, default to 3128
     let port = std::env::args()
@@ -233,13 +337,16 @@ async fn main() -> io::Result<()> {
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = TcpListener::bind(addr).await?;
     
+    info!("Proxy and health check listening on {}", addr);
     println!("Proxy and health check listening on {}", addr);
     println!("  Health check: http://localhost:{}/health", port);
     println!("  Direct proxy: http://localhost:{}/https://example.com", port);
     println!("  CONNECT proxy: curl --proxy http://localhost:{} https://example.com", port);
+    println!("  WebSocket logs: ws://localhost:{}/logs", port);
     
     // Mark proxy as ready
     PROXY_READY.store(true, std::sync::atomic::Ordering::SeqCst);
+    info!("Proxy is ready to accept connections");
     
     loop {
         let (client_stream, _) = listener.accept().await?;
@@ -247,8 +354,28 @@ async fn main() -> io::Result<()> {
         let key = key_der.clone();
         
         tokio::spawn(async move {
-            if let Err(e) = handle_client(client_stream, cert, key).await {
-                eprintln!("Error handling client: {}", e);
+            // Try to detect WebSocket upgrade request
+            let mut buffer = vec![0; 4096];
+            let n = match client_stream.peek(&mut buffer).await {
+                Ok(n) => n,
+                Err(_) => 0,
+            };
+            
+            let is_websocket = n > 0 && {
+                let request_str = String::from_utf8_lossy(&buffer[..n.min(1024)]);
+                request_str.contains("GET /logs") && request_str.contains("Upgrade: websocket")
+            };
+            
+            if is_websocket {
+                // Handle WebSocket connection
+                if let Err(e) = websocket_handler(client_stream).await {
+                    error!("WebSocket error: {}", e);
+                }
+            } else {
+                // Handle proxy request
+                if let Err(e) = handle_client(client_stream, cert, key).await {
+                    error!("Error handling client: {}", e);
+                }
             }
         });
     }
