@@ -3,7 +3,7 @@ name: playwright-proxy
 description: A web proxy that renders websites with Playwright and returns rendered HTML
 type: application
 version: 0.3.0
-appVersion: "0.1.0"
+appVersion: "0.2.0"
 home: https://github.com/Henkhogan/playwright-proxy
 sources:
   - https://github.com/Henkhogan/playwright-proxy
